@@ -23,7 +23,7 @@
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/wait.h>
-#include <linux/version.h>
+
 
 #include "../include/gowin_pcie_bar_drv_uapi.h"
 
@@ -47,6 +47,7 @@
 #define DRIVER_NAME "gowin_pcie_demo"
 #define DRIVER_VERSION "0.1"
 
+
 #define VMEM_FLAGS (VM_IO | VM_DONTEXPAND | VM_DONTDUMP)
 
 struct dma_context {
@@ -55,9 +56,9 @@ struct dma_context {
     size_t      len;
 };
 
+
 struct gowin_bar_data {
     struct pci_dev         *pdev;
-    void __iomem * const   *iomap;
     // void   __iomem          *base;
     // void   __iomem          *bar[PCI_STD_NUM_BARS];
 
@@ -106,8 +107,7 @@ static inline u32 gowin_readl(
         return 0;
     }
     else {
-        // return readl(pcim_iomap_table(data->pdev)[bar] + offset);
-        return readl(data->iomap[bar] + offset);
+        return readl(pcim_iomap_table(data->pdev)[bar] + offset);
     }
 }
 
@@ -127,8 +127,7 @@ static inline void gowin_writel(
         return;
     }
     else  {
-        // writel(value, pcim_iomap_table(data->pdev)[bar] + offset);
-        writel(value, data->iomap[bar] + offset);
+        writel(value, pcim_iomap_table(data->pdev)[bar] + offset);
     }
 }
 
@@ -147,8 +146,7 @@ static inline u16 gowin_readw(
         return 0;
     }
     else {
-        // return readw(pcim_iomap_table(data->pdev)[bar] + offset);
-        return readw(data->iomap[bar] + offset);
+        return readw(pcim_iomap_table(data->pdev)[bar] + offset);
     }
 }
 
@@ -168,8 +166,7 @@ static inline void gowin_writew(
         return;
     }
     else  {
-        // writew(value, pcim_iomap_table(data->pdev)[bar] + offset);
-        writew(value, data->iomap[bar] + offset);
+        writew(value, pcim_iomap_table(data->pdev)[bar] + offset);
     }
 }
 
@@ -188,8 +185,7 @@ static inline u8 gowin_readb(
         return 0;
     }
     else {
-        // return readb(pcim_iomap_table(data->pdev)[bar] + offset);
-        return readb(data->iomap[bar] + offset);
+        return readb(pcim_iomap_table(data->pdev)[bar] + offset);
     }
 }
 
@@ -209,10 +205,10 @@ static inline void gowin_writeb(
         return;
     }
     else  {
-        // writeb(value, pcim_iomap_table(data->pdev)[bar] + offset);
-        writeb(value, data->iomap[bar] + offset);
+        writeb(value, pcim_iomap_table(data->pdev)[bar] + offset);
     }
 }
+
 
 static irqreturn_t gowin_bar_irq_handler(int irq, void *dev_id)
 {
@@ -685,8 +681,7 @@ static int ioctl_switch_bar_mem(
             dev_err(dev, "Wrong parameter.");
             return -EINVAL;
         }
-        // if (pcim_iomap_table(data->pdev)[index] == NULL) {
-        if (data->iomap[index] == NULL) {
+        if (pcim_iomap_table(data->pdev)[index] == NULL) {
             return -EINVAL;
         }
         data->cur_bar = index;
@@ -1022,14 +1017,7 @@ static int gowin_bar_mmap(struct file *filp, struct vm_area_struct *vma)
      * prevent touching the pages (byte access) for swap-in,
      * and prevent the pages from being swapped out
      */
-
-    // vm_flags_set(vma, VMEM_FLAGS);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
     vm_flags_set(vma, VMEM_FLAGS);
-#else
-    vma->vm_flags |= VMEM_FLAGS;
-#endif
-
     if (data->mem_select == 0) {
         /*! make MMIO accessible to user space */
         //! TODO
@@ -1074,8 +1062,7 @@ static const struct file_operations gowin_bar_fops = {
     .owner          = THIS_MODULE,
     .unlocked_ioctl = gowin_bar_ioctl,
     .compat_ioctl   = compat_ptr_ioctl,
-    // .llseek         = no_llseek,
-    .llseek         = noop_llseek,
+    .llseek         = no_llseek,
     .open           = gowin_bar_open,
     //.write          = ,
     .mmap           = gowin_bar_mmap,
@@ -1147,26 +1134,14 @@ static int gowin_bar_probe(struct pci_dev *pdev,
     }
 
 #if 1
-    // err = pcim_iomap_regions_request_all(pdev, 1, DRIVER_NAME);
-    /* Reserve BAR regions (bitmask: 1 << BAR0 = 1) */
-    err = pcim_iomap_regions(pdev, 1, DRIVER_NAME);
+    err = pcim_iomap_regions_request_all(pdev, 1, DRIVER_NAME);
     if (unlikely(err)) {
-        // dev_err(dev, "pcim_iomap_regions_request_all() failed. (%d)\n", err);
-        dev_err(dev, "pcim_iomap_regions() failed. (%d)\n", err);
+        dev_err(dev, "pcim_iomap_regions_request_all() failed. (%d)\n", err);
         return err;
     }
-
-    /* Get I/O mapping table */
-    data->iomap = pcim_iomap_table(pdev);
-    if (!data->iomap) {
-        dev_err(dev, "pcim_iomap_table() returned NULL.\n");
-        return -ENOMEM;
-    }
-
     data->cur_bar = -1;
     for (bar = 0; bar < PCI_STD_NUM_BARS; bar++) {
-        // if (!pcim_iomap_table(pdev)[bar])
-        if (!data->iomap[bar])
+        if (!pcim_iomap_table(pdev)[bar])
             continue;
         if (data->cur_bar < 0)
             data->cur_bar = bar;
@@ -1236,12 +1211,7 @@ static int gowin_bar_probe(struct pci_dev *pdev,
         goto err_unregister_chrdev_region;
     }
 
-    // data->gw_class = class_create(CLASS_NAME);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,4,0)
     data->gw_class = class_create(CLASS_NAME);
-#else
-    data->gw_class = class_create(THIS_MODULE, CLASS_NAME);
-#endif
 
     if (IS_ERR(data->gw_class)) {
         dev_err(dev, "class_create() failed.\n");
