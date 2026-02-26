@@ -57,8 +57,8 @@ int submain_bar(int argc, char *argv[]) {
 
 #define DMA_SIZE (1024 * 1024)
 
-int DBG_INFO = 0;
-int DUMP_INFO = 0;
+int DBG_INFO = 1;
+int DUMP_INFO = 1;
 
 typedef struct __gowin_bar {
     volatile uint32_t ctrl;    //* 0x0000 - global enable
@@ -177,9 +177,8 @@ int submain_dma(int argc, char *argv[]) {
     while (1) {
         if (!ioctl(proc->fd, GOWIN_CONFIG_READ_DWORD, &param) &&
             param.cfg_dword != 0xFFFFFFFF) {
-            val = (param.cfg_dword & 0xFF1F) | (1 << 5); //* Maxpayload: 256
-            fprintf(stdout, "******** devctrl: %04x ********\n", val);
-            proc->gwbar->devctrl = val; // Maxpayload: 512
+            val = (param.cfg_dword & 0xFF1F) | (1 << 5);
+            proc->gwbar->devctrl = val;
             break;
         }
     }
@@ -192,22 +191,22 @@ int submain_dma(int argc, char *argv[]) {
     volatile uint8_t *dp = proc->mem_dst; // destination
     volatile uint64_t da = proc->dma_dst;
 
-    printf("\nFirst  Number: ");
+    int cnt_n = 2;
+    int cnt_try = 16;
+
+    fprintf(stdout, "\nFirst  Number: ");
     uint8_t x;
     scanf("%hhu", &x);
     // *(uint32_t *)(&sp[0]) = 0x5;
     ((uint32_t *)sp)[0] = x;
 
-    printf("Second Number: ");
+    fprintf(stdout, "Second Number: ");
     uint8_t y;
     scanf("%hhu", &y);
     // *(uint32_t *)(&sp[1]) = 0x3;
     ((uint32_t *)sp)[1] = y;
 
-    int block_size = (2 * 4 + 1023) & (~1023);
-    if (DBG_INFO) {
-        fprintf(stdout, "******** block_size %d ********\n", block_size);
-    }
+    int block_size = (cnt_n * 4 + 1023) & (~1023);
 
     ioctl(proc->fd, GOWIN_IRQ_ENABLE, 0); // turn on IR on channel 0
     ioctl(proc->fd, GOWIN_IRQ_ENABLE, 1); // turn on IR on channel 1
@@ -224,56 +223,69 @@ int submain_dma(int argc, char *argv[]) {
         fprintf(stdout, "check DMA enable: 0x%08x\n", proc->gwbar->ctrl);
     }
 
-    // PUSH
+    //! h2c
 
     proc->gwbar->intr = 1;
-
     proc->gwbar->channel[0].rdma_it_level = 16;
-    proc->gwbar->channel[0].wdma_it_level = 16;
 
-    proc->gwbar->channel[0].rdma_src_lo = sa & 0xFFFFFFFC;
-    proc->gwbar->channel[0].rdma_src_hi = (sa >> 32) & 0xFFFFFFFF;
-    proc->gwbar->channel[0].rdma_len = 2;
-    proc->gwbar->channel[0].rdma_tag = rx_tag++;
+    if (DBG_INFO) {
+        fprintf(stdout, "start copy to card\n");
+    }
 
-    sa += block_size;
-    sp += block_size;
-    if (sa + block_size > proc->dma_src + DMA_SIZE) {
-        sp = proc->mem_src;
-        sa = proc->dma_src;
+    for (int i = 0; i < cnt_try; i++) {
+        proc->gwbar->channel[0].rdma_src_lo = sa & 0xFFFFFFFF;
+        proc->gwbar->channel[0].rdma_src_hi = (sa >> 32) & 0xFFFFFFFF;
+        proc->gwbar->channel[0].rdma_len = cnt_n;
+        proc->gwbar->channel[0].rdma_tag = rx_tag++;
+
+        sa += block_size;
+        sp += block_size;
+        if (sa + block_size > proc->dma_src + DMA_SIZE) {
+            sp = proc->mem_src;
+            sa = proc->dma_src;
+        }
     }
 
     volatile int h2c_done = 0;
     do {
         h2c_done = proc->gwbar->channel[0].rdma_status & 0xFF;
-    } while (!h2c_done);
+        if (DUMP_INFO) {
+            fprintf(stdout, "loop1 (h2c_done)\n");
+        }
+    } while (255 == h2c_done);
 
-    // PULL
+    //! c2h
 
     proc->gwbar->intr = 1 << 16;
+    proc->gwbar->channel[1].wdma_it_level = 16;
 
     if (DBG_INFO) {
-        fprintf(stdout, "\nstart copy to host\n");
+        fprintf(stdout, "start copy to host\n");
     }
 
-    proc->gwbar->channel[0].wdma_dst_lo = da & 0xFFFFFFFF;
-    proc->gwbar->channel[0].wdma_dst_hi = (da >> 32) & 0xFFFFFFFF;
-    proc->gwbar->channel[0].wdma_len = 2;
-    proc->gwbar->channel[0].wdma_tag = tx_tag++;
+    for (int i = 0; i < cnt_try; i++) {
+        proc->gwbar->channel[1].wdma_dst_lo = da & 0xFFFFFFFF;
+        proc->gwbar->channel[1].wdma_dst_hi = (da >> 32) & 0xFFFFFFFF;
+        proc->gwbar->channel[1].wdma_len = cnt_n / 2;
+        proc->gwbar->channel[1].wdma_tag = tx_tag++;
 
-    da += block_size;
-    dp += block_size;
-    if (da + block_size > proc->dma_dst + DMA_SIZE) {
-        dp = proc->mem_dst;
-        da = proc->dma_dst;
+        da += block_size;
+        dp += block_size;
+        if (da + block_size > proc->dma_dst + DMA_SIZE) {
+            dp = proc->mem_dst;
+            da = proc->dma_dst;
+        }
     }
 
     volatile int c2h_done = 0;
     do {
-        c2h_done = proc->gwbar->channel[0].wdma_status & 0xFF;
-    } while (!c2h_done);
+        c2h_done = proc->gwbar->channel[1].wdma_status & 0xFF;
+        if (DUMP_INFO) {
+            fprintf(stdout, "loop2 (c2h_done)\n");
+        }
+    } while (255 == c2h_done);
 
-    printf("Result: %u (waiting %hhu)\n", ((uint32_t *)dp)[0], x + y);
+    fprintf(stdout, "Result: %u (waiting %hhu)\n", ((uint32_t *)dp)[0], x + y);
 
     ioctl(proc->fd, GOWIN_IRQ_DISABLE, 1); // turn off IR on channel 1
     ioctl(proc->fd, GOWIN_IRQ_DISABLE, 0); // turn off IR on channel 0

@@ -1342,8 +1342,8 @@ static void gowin_bar_remove(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id gowin_tbl[] = {
-    // { PCI_DEVICE(0x22c2, 0x1100),
-    { PCI_DEVICE(PCI_ANY_ID, PCI_ANY_ID),
+    { PCI_DEVICE(0x22c2, 0x1100),
+    // { PCI_DEVICE(PCI_ANY_ID, PCI_ANY_ID),
     //   .driver_data = (kernel_ulong_t)&default_data,
     },
     {0}
