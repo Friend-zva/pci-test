@@ -137,14 +137,14 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    param.cfg_type = 2;
-    param.cfg_where = 0x90; //? Device Status / Command Register
+    param.cfg_type = 2; // dword
+    param.cfg_where = 0x88; // register Device Control/Status
 
     while (1) {
         if (!ioctl(proc->fd, GOWIN_CONFIG_READ_DWORD, &param) &&
             param.cfg_dword != 0xFFFFFFFF) {
             val = (param.cfg_dword & 0xFF1F) | (1 << 5);
-            proc->gwbar->devctrl = val;
+            proc->gwbar->devctrl = val; // payload
             break;
         }
     }
@@ -157,19 +157,17 @@ int main(int argc, char *argv[]) {
     volatile uint8_t *dp = proc->mem_dst; // destination
     volatile uint64_t da = proc->dma_dst;
 
-    int cnt_n = 2;
-    int cnt_try = 1;
+    int cnt_n = 4; //! test
+    int cnt_try = 1; //! test
 
     fprintf(stdout, "\nFirst  Number: ");
     uint8_t x;
     scanf("%hhu", &x);
-    // *(uint32_t *)(&sp[0]) = 0x5;
     ((uint32_t *)sp)[0] = x;
 
     fprintf(stdout, "Second Number: ");
     uint8_t y;
     scanf("%hhu", &y);
-    // *(uint32_t *)(&sp[1]) = 0x3;
     ((uint32_t *)sp)[1] = y;
 
     int block_size = (cnt_n * 4 + 1023) & (~1023);
@@ -189,11 +187,9 @@ int main(int argc, char *argv[]) {
         fprintf(stdout, "check DMA enable: 0x%08x\n", proc->gwbar->ctrl);
     }
 
-    int channel_wdma = 1; //! for fast toggle channel
-
-    proc->gwbar->intr = 1 << 16;
+    proc->gwbar->intr = 1;
+    proc->gwbar->channel[0].wdma_it_level = 16;
     proc->gwbar->channel[0].rdma_it_level = 16;
-    proc->gwbar->channel[channel_wdma].wdma_it_level = 16;
 
     // h2c
 
@@ -213,11 +209,13 @@ int main(int argc, char *argv[]) {
         proc->gwbar->channel[0].rdma_len = cnt_n;
         proc->gwbar->channel[0].rdma_tag = rx_tag++;
 
-        sa += block_size;
-        sp += block_size;
-        if (sa + block_size > proc->dma_src + DMA_SIZE) {
-            sp = proc->mem_src;
-            sa = proc->dma_src;
+        if (cnt_try != 1) {
+            sa += block_size;
+            sp += block_size;
+            if (sa + block_size > proc->dma_src + DMA_SIZE) {
+                sp = proc->mem_src;
+                sa = proc->dma_src;
+            }
         }
     }
 
@@ -228,14 +226,12 @@ int main(int argc, char *argv[]) {
     }
 
     volatile int h2c_done = 0;
-    if (channel_wdma) {
-        do {
-            h2c_done = proc->gwbar->channel[0].rdma_status & 0xFF;
-            if (DUMP_INFO) {
-                fprintf(stdout, "loop1 (h2c_done)\n");
-            }
-        } while (255 == h2c_done);
-    }
+    do {
+        h2c_done = proc->gwbar->channel[0].rdma_status & 0xFF;
+        if (DUMP_INFO) {
+            fprintf(stdout, "loop1 (h2c_done)\n");
+        }
+    } while (255 == h2c_done);
 
     // c2h
 
@@ -243,30 +239,31 @@ int main(int argc, char *argv[]) {
         fprintf(stdout, "start copy to host\n");
     }
 
-    for (int i = 0; i < cnt_try; i++) {
-        proc->gwbar->channel[channel_wdma].wdma_dst_lo = da & 0xFFFFFFFF;
-        proc->gwbar->channel[channel_wdma].wdma_dst_hi = (da >> 32) & 0xFFFFFFFF;
-        proc->gwbar->channel[channel_wdma].wdma_len = cnt_n / 2;
-        proc->gwbar->channel[channel_wdma].wdma_tag = tx_tag++;
+    proc->gwbar->intr = 1 << 16;
 
-        da += block_size;
-        dp += block_size;
-        if (da + block_size > proc->dma_dst + DMA_SIZE) {
-            dp = proc->mem_dst;
-            da = proc->dma_dst;
+    for (int i = 0; i < cnt_try; i++) {
+        proc->gwbar->channel[0].wdma_dst_lo = da & 0xFFFFFFFF;
+        proc->gwbar->channel[0].wdma_dst_hi = (da >> 32) & 0xFFFFFFFF;
+        proc->gwbar->channel[0].wdma_len = cnt_n;
+        proc->gwbar->channel[0].wdma_tag = tx_tag++;
+
+        if (cnt_try != 1) {
+            da += block_size;
+            dp += block_size;
+            if (da + block_size > proc->dma_dst + DMA_SIZE) {
+                dp = proc->mem_dst;
+                da = proc->dma_dst;
+            }
         }
     }
 
     volatile int c2h_done = 0;
     do {
-        c2h_done = proc->gwbar->channel[channel_wdma].wdma_status & 0xFF;
-        if (!channel_wdma) {
-            h2c_done = proc->gwbar->channel[0].rdma_status & 0xFF;
-        }
+        c2h_done = proc->gwbar->channel[0].wdma_status & 0xFF;
         if (DUMP_INFO) {
             fprintf(stdout, "loop2 (c2h_done)\n");
         }
-    } while (255 == c2h_done && (channel_wdma || 255 == h2c_done));
+    } while (255 == c2h_done);
 
     fprintf(stdout, "Result: %u (waiting %hhu)\n", ((uint32_t *)dp)[0], x + y);
     if (DBG_INFO) {
