@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,9 +7,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <fcntl.h>
-// #include <sys/types.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
@@ -30,11 +30,6 @@ typedef struct __gowin_bar {
     volatile uint32_t rsv1[3];  //* 0x0014-0x001F - reservation
     volatile uint32_t devctrl;  //* 0x0020 - device control
     volatile uint32_t rsv2[55]; //* 0x0024-0x00FF - reservation
-
-    // volatile uint32_t ddr_base_lo;
-    // volatile uint32_t ddr_base_hi;
-    // volatile uint32_t ddr_len;
-    // volatile uint32_t ddr_ctrl;
 
     struct {
         volatile uint32_t rdma_src_lo;   //* 0x0100 - lower address of system memory
@@ -147,11 +142,13 @@ void handle_sigint(int sig) { flag_exit = 1; }
 
 int main(int argc, char *argv[]) {
     signal(SIGINT, handle_sigint);
+    volatile int val;
 
     Process *proc = init_proc();
     if (proc == NULL) {
         return -1;
     }
+    GowinBar *gwbar = proc->gwbar;
 
     struct gowin_ioctl_param param = {0};
     param.cfg_type = 2;     // dword
@@ -159,9 +156,9 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         if (!ioctl(proc->fd, GOWIN_CONFIG_READ_DWORD, &param) &&
-            param.cfg_dword != 0xFFFFFFFF) { //* read cfg_where
-            proc->gwbar->devctrl =
-                (param.cfg_dword & 0xFF1F) | (1 << 5); // payload 256B
+            param.cfg_dword != 0xFFFFFFFF) {             //* read cfg_where
+            val = (param.cfg_dword & 0xFF1F) | (1 << 5); // payload 256B
+            gwbar->devctrl = val;
             break;
         }
     }
@@ -176,7 +173,8 @@ int main(int argc, char *argv[]) {
 
     uint32_t cnt = 64; // 64 * 4 = 256B
     int size = DMA_SIZE / 2;
-    int loop = size / cnt;
+    int size_dump = 32; //* (size / 2) - full
+    int loop = size / (cnt * 4);
 
     for (int i = 0; i < size; i++) {
         *(uint16_t *)(&sp[i * 2]) = i % 65536;
@@ -186,104 +184,110 @@ int main(int argc, char *argv[]) {
 
     ioctl(proc->fd, GOWIN_IRQ_ENABLE, 0); // turn on IR on channel 0
     ioctl(proc->fd, GOWIN_IRQ_ENABLE, 1); // turn on IR on channel 1
-    toggle_controller(proc->gwbar, 1);
+    toggle_controller(gwbar, 1);
 
-    proc->gwbar->intr = 1;
-    proc->gwbar->channel[0].wdma_it_level = 16;
-    proc->gwbar->channel[0].rdma_it_level = 16;
+    gwbar->intr = 0x00010001;
+    gwbar->channel[0].wdma_it_level = 16;
+    gwbar->channel[0].rdma_it_level = 16;
 
-    // h2c
+    int step = 0;
+    int h2c_count = 0, c2h_count = 0;
+    volatile int h2c_level = 0, c2h_level = 0;
 
-    if (DBG_INFO) {
-        for (int i = 0; i < size; i++) {
-            printf("0x%02x ", sp[i * 2]);
-        }
-    }
-
-    if (DBG_INFO) {
-        printf("start copy to card\n");
-    }
-
-    for (int i = 0; i < loop; i++) {
-        proc->gwbar->channel[0].rdma_src_lo = sa & 0xFFFFFFFC;
-        proc->gwbar->channel[0].rdma_src_hi = (sa >> 32) & 0xFFFFFFFF;
-        proc->gwbar->channel[0].rdma_len = cnt;
-        proc->gwbar->channel[0].rdma_tag = rx_tag++;
-
-        sa += block_size;
-        sp += block_size;
-        if (sa + block_size > proc->dma_src + DMA_SIZE) {
-            sp = proc->mem_src;
-            sa = proc->dma_src;
+    while (c2h_count < loop || h2c_count < loop) {
+        if (DBG_INFO) {
+            if (DUMP_INFO) {
+                for (int i = 0; i < size_dump; i++) {
+                    uint16_t lo = *(uint16_t *)(&sp[i * 4]);
+                    uint16_t hi = *(uint16_t *)(&sp[i * 4 + 2]);
+                    printf("(0x%04x, 0x%04x) ", lo, hi);
+                }
+                printf("\n");
+            }
+            printf("start copy to card\n");
         }
 
-        if (rx_tag >= 32) {
-            rx_tag = 16;
-        }
-    }
+        step = (h2c_count == 0) ? 16 : (h2c_level < 64 ? 32 : 0);
+        while (h2c_count < loop && step > 0) {
+            gwbar->channel[0].rdma_src_lo = sa & 0xFFFFFFFC;
+            gwbar->channel[0].rdma_src_hi = (sa >> 32) & 0xFFFFFFFF;
+            gwbar->channel[0].rdma_len = cnt;
+            gwbar->channel[0].rdma_tag = rx_tag++;
 
-    if (DBG_INFO) {
-        for (int i = 0; i < size / 2; i++) {
-            uint16_t lo = *(uint16_t *)(&sp[i * 4]);
-            uint16_t hi = *(uint16_t *)(&sp[i * 4 + 2]);
-            printf("(0x%04x, 0x%04x) ", lo, hi);
-        }
-        printf("\n");
-    }
+            sa += block_size;
+            sp += block_size;
+            if (sa + block_size > proc->dma_src + DMA_SIZE) {
+                sp = proc->mem_src;
+                sa = proc->dma_src;
+            }
 
-    volatile int h2c_done = 0;
-    do {
-        h2c_done = proc->gwbar->channel[0].rdma_status & 0xFF;
+            if (rx_tag >= 32) {
+                rx_tag = 16;
+            }
+            step--;
+            h2c_count++;
+        }
+        do {
+            h2c_level = gwbar->channel[0].rdma_status & 0xFF;
+        } while (!flag_exit && h2c_level == 0xFF);
+
+        if (h2c_count == loop) {
+            do {
+                val = 0xC0000000 & gwbar->channel[0].rdma_status;
+            } while (!flag_exit && val != 0xC0000000);
+        }
+
+        if (DBG_INFO) {
+            printf("start copy to host\n");
+        }
+
+        step = (c2h_count == 0) ? 8 : (c2h_level < 64 ? 32 : 0);
+        while (c2h_count < loop && step > 0) {
+            gwbar->channel[0].wdma_dst_lo = da & 0xFFFFFFFC;
+            gwbar->channel[0].wdma_dst_hi = (da >> 32) & 0xFFFFFFFF;
+            gwbar->channel[0].wdma_len = cnt;
+            gwbar->channel[0].wdma_tag = tx_tag++;
+
+            da += block_size;
+            dp += block_size;
+            if (da + block_size > proc->dma_dst + DMA_SIZE) {
+                dp = proc->mem_dst;
+                da = proc->dma_dst;
+            }
+
+            if (tx_tag >= 32) {
+                tx_tag = 16;
+            }
+            step--;
+            c2h_count++;
+        }
+        do {
+            c2h_level = gwbar->channel[0].wdma_status & 0xFF;
+        } while (!flag_exit && c2h_level == 0xFF);
+
+        if (c2h_count == loop) {
+            do {
+                val = 0xC0000000 & gwbar->channel[0].wdma_status;
+            } while (!flag_exit && val != 0xC0000000);
+        }
+
         if (DUMP_INFO) {
-            printf("loop1 (h2c_done)\n");
-        }
-    } while (!flag_exit && 255 == h2c_done);
-
-    // c2h
-
-    if (DBG_INFO) {
-        printf("start copy to host\n");
-    }
-
-    proc->gwbar->intr = 1 << 16;
-
-    for (int i = 0; i < loop; i++) {
-        proc->gwbar->channel[0].wdma_dst_lo = da & 0xFFFFFFFC;
-        proc->gwbar->channel[0].wdma_dst_hi = (da >> 32) & 0xFFFFFFFF;
-        proc->gwbar->channel[0].wdma_len = cnt;
-        proc->gwbar->channel[0].wdma_tag = tx_tag++;
-
-        da += block_size;
-        dp += block_size;
-        if (da + block_size > proc->dma_dst + DMA_SIZE) {
-            dp = proc->mem_dst;
-            da = proc->dma_dst;
+            for (int i = 0; i < size_dump; i++) {
+                uint32_t val = *(uint32_t *)(&dp[i * 4]);
+                printf("0x%08x ", val);
+            }
+            printf("\n");
         }
 
-        if (tx_tag >= 32) {
-            tx_tag = 16;
+        if (flag_exit) {
+            break;
         }
     }
-
-    volatile int c2h_done = 0;
-    do {
-        c2h_done = proc->gwbar->channel[0].wdma_status & 0xFF;
-        if (DUMP_INFO) {
-            printf("loop2 (c2h_done)\n");
-        }
-    } while (!flag_exit && 255 == c2h_done);
 
     printf("Result: 0x%08x (waiting 0x%08x)\n", ((uint32_t *)dp)[3],
            ((uint16_t *)sp)[3 * 2] + ((uint16_t *)sp)[3 * 2 + 1]);
-    if (DBG_INFO) {
-        for (int i = 0; i < size / 2; i++) {
-            uint32_t val = *(uint32_t *)(&dp[i * 4]);
-            printf("0x%08x ", val);
-        }
-        printf("\n");
-    }
 
-    toggle_controller(proc->gwbar, 0);
+    toggle_controller(gwbar, 0);
     ioctl(proc->fd, GOWIN_IRQ_DISABLE, 1); // turn off IR on channel 1
     ioctl(proc->fd, GOWIN_IRQ_DISABLE, 0); // turn off IR on channel 0
 
