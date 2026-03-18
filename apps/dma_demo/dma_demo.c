@@ -193,6 +193,7 @@ int main(int argc, char *argv[]) {
     int step = 0;
     int h2c_count = 0, c2h_count = 0;
     volatile int h2c_level = 0, c2h_level = 0;
+    const int max_level = 4; // RQ_CC_NUM = 4
 
     while (c2h_count < loop || h2c_count < loop) {
         if (DBG_INFO) {
@@ -207,7 +208,9 @@ int main(int argc, char *argv[]) {
             printf("start copy to card\n");
         }
 
-        step = (h2c_count == 0) ? 16 : (h2c_level < 64 ? 32 : 0);
+        h2c_level = gwbar->channel[0].rdma_status & 0xFF;
+        step = (h2c_level < max_level) ? (max_level - h2c_level) : 0;
+
         while (h2c_count < loop && step > 0) {
             gwbar->channel[0].rdma_src_lo = sa & 0xFFFFFFFC;
             gwbar->channel[0].rdma_src_hi = (sa >> 32) & 0xFFFFFFFF;
@@ -241,7 +244,9 @@ int main(int argc, char *argv[]) {
             printf("start copy to host\n");
         }
 
-        step = (c2h_count == 0) ? 8 : (c2h_level < 64 ? 32 : 0);
+        c2h_level = gwbar->channel[0].wdma_status;
+        step = (c2h_level < max_level) ? (max_level - c2h_level) : 0;
+
         while (c2h_count < loop && step > 0) {
             gwbar->channel[0].wdma_dst_lo = da & 0xFFFFFFFC;
             gwbar->channel[0].wdma_dst_hi = (da >> 32) & 0xFFFFFFFF;
