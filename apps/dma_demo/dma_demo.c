@@ -19,9 +19,6 @@
 #define DMA_SIZE (1024 * 1024)
 
 int DBG_INFO = 1;
-int DUMP_INFO = 1;
-
-int add_mode[8] = {3, 1, 0, 1, 0, 1, 0, 1};
 
 static inline int64_t get_clock() {
     struct timespec ts;
@@ -77,7 +74,6 @@ int main(int argc, char *argv[]) {
     int64_t t1, t2;
     int mode = 1;
     int cnt = 32;
-    int cnt_align = 32;
     int loop = 1;
     int dump = 1;
     struct gowin_ioctl_param param = {0};
@@ -95,7 +91,6 @@ int main(int argc, char *argv[]) {
         cnt = strtol(argv[2], NULL, 0);
         if (cnt <= 0)
             cnt = 32;
-        cnt_align = (cnt + 255) & ~255;
     }
     if (argc > 3) {
         loop = strtol(argv[3], NULL, 0);
@@ -131,6 +126,9 @@ int main(int argc, char *argv[]) {
         param.cfg_where = 0x90;
         val = ioctl(fd, GOWIN_CONFIG_READ_DWORD, &param);
         if (val) {
+            if (DBG_INFO) {
+                fprintf(stdout, "*** Finish loop ***\n");
+            }
             break;
         } else {
             switch ((param.cfg_dword >> 16) & 0xF) {
@@ -176,12 +174,12 @@ int main(int argc, char *argv[]) {
         while (1) {
             if (!ioctl(fd, GOWIN_CONFIG_READ_DWORD, &param) &&
                 param.cfg_dword != 0xFFFFFFFF) {
-                // val = (param.cfg_dword & 0xFF1F);            // Maxpayload: 128
+                // val = (param.cfg_dword & 0xFF1F);         // Maxpayload: 128
                 val = (param.cfg_dword & 0xFF1F) | (1 << 5); // Maxpayload: 256
-                // val = (param.cfg_dword & 0xFF1F) | (2<<5);   // Maxpayload: 512
-                // val = (param.cfg_dword & 0xFF1F) | (3<<5);   // Maxpayload: 1024
+                // val = (param.cfg_dword & 0xFF1F) | (2<<5);// Maxpayload: 512
+                // val = (param.cfg_dword & 0xFF1F) | (3<<5);// Maxpayload: 1024
                 fprintf(stdout, "******** devctrl: %04x ********\n", val);
-                gwbar->devctrl = val; // Maxpayload: 512
+                gwbar->devctrl = val;
                 break;
             }
         }
@@ -201,8 +199,10 @@ int main(int argc, char *argv[]) {
         // sp += 1024;
         // sa += 1024;
 
-        if (DBG_INFO)
-            fprintf(stdout, "******** block_size %d ********\n", block_size);
+        if (DBG_INFO) {
+            fprintf(stdout, "*** Start ***\nmode: %i, cnt: %i, loop: %i\n", mode,
+                    cnt, loop);
+        }
 
         ioctl(fd, GOWIN_IRQ_ENABLE, 0);
         ioctl(fd, GOWIN_IRQ_ENABLE, 1);
@@ -215,16 +215,16 @@ int main(int argc, char *argv[]) {
 
         // gwbar->aclr = (3 << 16) | 3;
 
-        if (DBG_INFO)
-            fprintf(stdout, "chack DMA enable: 0x%08x\n", gwbar->ctrl);
-        if (DBG_INFO)
-            fprintf(stdout, "enable DMA\n");
+        if (DBG_INFO) {
+            fprintf(stdout, "First check DMA enable: 0x%08x\n", gwbar->ctrl);
+        }
         val = gwbar->ctrl;
         val |= 1;
         gwbar->ctrl = val;
         // gwbar->intr = 3;
-        if (DBG_INFO)
-            fprintf(stdout, "chack DMA enable: 0x%08x\n", gwbar->ctrl);
+        if (DBG_INFO) {
+            fprintf(stdout, "Second check DMA enable: 0x%08x\n", gwbar->ctrl);
+        }
 
         gwbar->channel[0].rdma_it_level = 16;
         gwbar->channel[0].wdma_it_level = 16;
@@ -242,11 +242,15 @@ int main(int argc, char *argv[]) {
         volatile int h2c_level = 0;
         volatile int c2h_level = 0;
         while (c2h_count < loop || h2c_count < loop) {
-            if (DBG_INFO)
-                fprintf(stdout, "******** Loop %d ********\n", j);
+            if (DBG_INFO) {
+                fprintf(stdout,
+                        "*** Loop ***\nh2c_count: %i, c2h_count: %i, j: %i,\n",
+                        h2c_count, c2h_count, j);
+            }
 
             if (mode & 1) { // h2c
                 if (dump && h2c_count == 0) {
+                    // DUMPING
                     fprintf(stdout, "Dump data @0x%p before copy to card:\n", sp);
                     for (int i = 0; i < cnt * 4; i++) {
                         if (i % 16 == 0)
@@ -257,8 +261,9 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                if (DBG_INFO)
-                    fprintf(stdout, "start copy to card\n");
+                if (DBG_INFO) {
+                    fprintf(stdout, "*** start copy to card ***\n");
+                }
                 j = (h2c_count == 0) ? 16 : (h2c_level < 64 ? 32 : 0);
                 while (h2c_count < loop && j > 0) {
                     gwbar->channel[0].rdma_src_lo = sa & 0xFFFFFFFC;
@@ -279,6 +284,10 @@ int main(int argc, char *argv[]) {
                 }
                 do {
                     h2c_level = gwbar->channel[0].rdma_status & 0xFF;
+                    if (DBG_INFO) {
+                        fprintf(stdout, "* loop1: (rdma_status255, %i) *\n",
+                                h2c_level);
+                    }
                 } while (255 == h2c_level);
 
                 if (!(mode & 2)) {
@@ -293,19 +302,27 @@ int main(int argc, char *argv[]) {
                             // val = bar_readl(fd, 0, 0x0114);
                             val = 0xC0000000 & gwbar->channel[0].rdma_status;
                             // fprintf(stdout, "val:%d (0x%08x)\n", val, val);
+                            if (DBG_INFO) {
+                                fprintf(stdout, "* loop2: (rdma_status0xC, %i) *\n",
+                                        val);
+                            }
                         } while (val != 0xC0000000);
                     } else {
                         do {
                             h2c_level = gwbar->channel[0].rdma_status & 0xFF;
+                            if (DBG_INFO) {
+                                fprintf(stdout, "* loop3: (rdma_status255, %i) *\n",
+                                        h2c_level);
+                            }
                         } while (255 == h2c_level);
                     }
                 }
             }
 
             if (mode & 2) { // c2h
-                if (DBG_INFO)
-                    fprintf(stdout,
-                            "---------------------------\nstart copy to host\n");
+                if (DBG_INFO) {
+                    fprintf(stdout, "*** start copy to host ***\n");
+                }
                 j = (c2h_count == 0) ? 8 : (c2h_level < 64 ? 32 : 0);
                 while (c2h_count < loop && j > 0) {
                     gwbar->channel[0].wdma_dst_lo = da & 0xFFFFFFFF;
@@ -329,6 +346,10 @@ int main(int argc, char *argv[]) {
                     // val = bar_readl(fd, 0, 0x0214) & 0xFF;
                     // fprintf(stdout, ".... %x(%d)\n", val, val);
                     // if (val & 0xff > 16) val = -1;
+                    if (DBG_INFO) {
+                        fprintf(stdout, "* loop4: (wdma_status255, %i) *\n",
+                                c2h_level);
+                    }
                 } while (255 == c2h_level);
                 if (1) {
                     if (c2h_level > 32) {
@@ -341,7 +362,12 @@ int main(int argc, char *argv[]) {
                             // val = bar_readl(fd, 0, 0x0214);
                             // val &= 0xC0000000;
                             val = 0xC0000000 & gwbar->channel[0].wdma_status;
+                            if (DBG_INFO) {
+                                fprintf(stdout, "* loop5: (wdma_status0xC, %i) *\n",
+                                        val);
+                            }
                         } while (val != 0xC0000000);
+                        // DUMPING
                         if (dump) {
                             fprintf(stdout, "Dump data @0x%p after copy to host:\n",
                                     dp);
@@ -358,6 +384,9 @@ int main(int argc, char *argv[]) {
             }
 
             if (mode == 3) {
+                if (DBG_INFO) {
+                    fprintf(stdout, "*** Mode 3 ***\n");
+                }
                 int i;
                 for (i = 0; i < cnt * 4; i++) {
                     if (sp[i] != (~dp[i] & 0xFF))
@@ -383,12 +412,24 @@ int main(int argc, char *argv[]) {
                 t2);
         fprintf(stdout, "Speed: %2.3f Gbps (%2.1f%%)\n", bps, rate);
 
+        if (DBG_INFO) {
+            fprintf(stdout, "Third check DMA enable: 0x%08x\n", gwbar->ctrl);
+        }
+
         ioctl(fd, GOWIN_IRQ_DISABLE, 1);
         ioctl(fd, GOWIN_IRQ_DISABLE, 0);
         // bar_writel(fd, 0, 0x08, 3 << 16);
+
+        if (DBG_INFO) {
+            fprintf(stdout, "Fourth check DMA enable: 0x%08x\n", gwbar->ctrl);
+        }
     } while (0);
 
     fprintf(stdout, "timeout count: %d\n", to_count);
+
+    if (DBG_INFO) {
+        fprintf(stdout, "Final check DMA enable: 0x%08x\n", gwbar->ctrl);
+    }
 
     if (bar) {
         munmap(bar, BAR_SIZE);

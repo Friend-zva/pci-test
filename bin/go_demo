@@ -1,0 +1,42 @@
+#!/bin/bash
+
+bindir="$(dirname $0)"
+
+clear
+
+echo -e '\e[36m###########################################################################'
+echo -e '\e[36m#                                                                         #'
+echo -e '\e[36m# \e[36m                                   /\      /\                          \e[36m #'
+echo -e '\e[36m# \e[36m                                  /**\    /**\                         \e[36m #'
+echo -e '\e[36m# \e[36m                                 /\**/\  /\**/\                        \e[36m #'
+echo -e '\e[36m# \e[36m                                /**\/**\/**\/**\                       \e[36m #'
+echo -e '\e[36m# \e[34m    ,ad###ba,     ,ad###ba,    /\\\e[36m**/\**\e[34m/\\\e[36m**/\**\e[34m/\   ###  ####.    ### \e[36m  #'
+echo -e '\e[36m# \e[34m   ####"""#      ####"""####  /##\\\e[36m/**\\\e[34m/##\\\e[36m/**\\\e[34m/##\  ###  #####.   ### \e[36m  #'
+echo -e '\e[36m# \e[34m  ###"          ###"     "### \###\\\e[36m**\e[34m/####\\\e[36m**\e[34m/###/  ###  ######.  ### \e[36m  #'
+echo -e '\e[36m# \e[34m  ###     ..... ###       ###  \###\/######\/###/   ###  ###`###. ### \e[36m  #'
+echo -e '\e[36m# \e[34m  ###     ##### ###       ###   \######/\######/    ###  ### `###.### \e[36m  #'
+echo -e '\e[36m# \e[34m  ###,     ,### ###,     ,###    \####/  \####/     ###  ###  `###### \e[36m  #'
+echo -e '\e[36m# \e[34m   ####...####   ####...####      \##/    \##/      ###  ###   `##### \e[36m  #'
+echo -e '\e[36m# \e[34m    `"Y###Y"`     `"Y###Y"`        \/      \/       ###  ###    `#### \e[36m  #'
+echo -e '\e[36m#                                                                         #'
+echo -e '\e[36m###########################################################################\e[0m'
+
+dev=$(lspci -d 22c2:1100)
+
+[ -z "$dev" ] && {
+    echo "Could not find the Gowin's PCIe demo device."
+    exit 1
+}
+
+echo -e "Find PCIe device:\n$dev\n"
+
+grep -e 'Gowin' -e 'GOWIN'  /usr/share/misc/pci.ids -q || {
+  sudo sed -i '/Illegal Vendor ID/i\
+22c2  Gowin Semiconductor Corporation' /usr/share/misc/pci.ids
+}
+
+lsmod | grep -q 'gowin_demo' || {
+    sudo insmod ${bindir}/../driver/gowin_demo.ko
+}
+
+sudo ${bindir}/dma_demo b 32 4
