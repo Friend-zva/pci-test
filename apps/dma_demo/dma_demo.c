@@ -38,6 +38,10 @@ static void wait_irq(int fd, int irq_num, int timeout_ms) {
             irq_timeouts++;
             return;
         }
+        if (errno == EINTR) {
+            flag_exit = 1;
+            return;
+        }
         if (DBG_INFO) {
             fprintf(stderr, "GOWIN_WAIT_IRQ(%d) failed: %s\n", irq_num,
                     strerror(errno));

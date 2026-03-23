@@ -490,15 +490,15 @@ static int ioctl_wait_irq(
     }
 
     count = atomic64_read(&data->irq_count[param.irq_idx]);
-    do {
-        ret = wait_event_interruptible_timeout(
-                    data->irq_wait[param.irq_idx],
-                    count != atomic64_read(&data->irq_count[param.irq_idx]),
-                    msecs_to_jiffies(timeout));
-        timeout = ret;
-    } while (ret == -ERESTARTSYS);
+    ret = wait_event_interruptible_timeout(
+                data->irq_wait[param.irq_idx],
+                count != atomic64_read(&data->irq_count[param.irq_idx]),
+                msecs_to_jiffies(timeout));
     // printk(KERN_DEBUG "[ioctl_wait_irq] count[%d] = %lld (%lld, %d)\n", param.irq_idx, atomic64_read(&data->irq_count[param.irq_idx]), count, ret);
     // count = atomic64_read(&data->irq_count[param.irq_idx]);
+    if (ret == -ERESTARTSYS) {
+        return -EINTR;
+    }
     if (ret == 0) {
         return -ETIMEDOUT;
     } 
